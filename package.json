@@ -3,6 +3,14 @@
   "version": "1.0.0",
   "description": "Adds WhatsApp-style read receipts to NodeBB chat messages",
   "main": "library.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/palmoni5/nodebb-plugin-chat-read-receipts.git"
+  },
+  "bugs": {
+    "url": "https://github.com/palmoni5/nodebb-plugin-chat-read-receipts/issues"
+  },
+  "homepage": "https://github.com/palmoni5/nodebb-plugin-chat-read-receipts#readme",
   "nbbpm": {
     "compatibility": "^4.0.0"
   },
