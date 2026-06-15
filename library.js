@@ -23,11 +23,6 @@ plugin.init = async function () {
 	};
 };
 
-plugin.addClientScript = async function (scripts) {
-	scripts.push('plugins/nodebb-plugin-chat-read-receipts/static/lib/main.js');
-	return scripts;
-};
-
 async function assertInRoom(uid, roomId) {
 	if (!(parseInt(uid, 10) > 0) || !(parseInt(roomId, 10) > 0)) {
 		throw new Error('[[error:invalid-data]]');

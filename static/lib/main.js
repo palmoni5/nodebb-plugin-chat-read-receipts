@@ -11,15 +11,11 @@
 	RR.lastMarkSeen = RR.lastMarkSeen || {};
 	RR.socketBound = RR.socketBound || false;
 
-	const isHebrew = (document.documentElement.lang || 'en').startsWith('he');
-	const txt = {
-		sent: isHebrew ? 'נשלח' : 'Sent',
-		read: isHebrew ? 'נקרא' : 'Read',
-		readByAll: isHebrew ? 'נקרא ע״י כולם' : 'Read by all',
-		readByN: isHebrew ? 'נקרא ע״י %1' : 'Read by %1',
-		readByNames: isHebrew ? 'נקרא ע״י: %1' : 'Read by: %1',
-		notReadYet: isHebrew ? 'טרם נקרא' : 'Not read yet',
-	};
+	function t(str) {
+		return new Promise(resolve => require(['translator'], translator =>
+			translator.translate(str, resolve)
+		));
+	}
 
 	function myUid() {
 		return parseInt(app.user.uid, 10);
@@ -63,70 +59,64 @@
 	}
 
 	// Compute the receipt for one of *my* outgoing messages, given the room state.
-	function buildReceipt(state, msgTs) {
-		const others = [];
-		Object.keys(state.byUid).forEach(function (uid) {
-			if (parseInt(uid, 10) !== myUid()) {
-				others.push(state.byUid[uid]);
-			}
-		});
+	async function buildReceipt(state, msgTs) {
+		const others = Object.keys(state.byUid)
+			.filter(uid => parseInt(uid, 10) !== myUid())
+			.map(uid => state.byUid[uid]);
 		const totalOthers = others.length;
-		const readers = others.filter(function (o) {
-			return o.ts >= msgTs;
-		});
-		const readerNames = readers.map(function (o) {
-			return o.name;
-		});
+		const readers = others.filter(o => o.ts >= msgTs);
+		const readerNames = readers.map(o => o.name).join(', ');
 
 		// One-on-one room: a single "other" participant.
 		if (totalOthers <= 1) {
 			if (readers.length >= 1) {
-				return { html: '<i class="fa fa-check-double"></i>', cls: 'read', title: txt.read };
+				return { html: '<i class="fa fa-check-double"></i>', cls: 'read', title: await t('[[chat-read-receipts:read]]') };
 			}
-			return { html: '<i class="fa fa-check"></i>', cls: 'sent', title: txt.sent };
+			return { html: '<i class="fa fa-check"></i>', cls: 'sent', title: await t('[[chat-read-receipts:sent]]') };
 		}
 
 		// Group room: more than one other participant.
 		if (readers.length === 0) {
-			return { html: '<i class="fa fa-check"></i>', cls: 'sent', title: txt.sent };
+			return { html: '<i class="fa fa-check"></i>', cls: 'sent', title: await t('[[chat-read-receipts:sent]]') };
 		}
 		if (readers.length >= totalOthers) {
 			return {
-				html: '<i class="fa fa-check-double"></i> ' + txt.readByAll,
+				html: '<i class="fa fa-check-double"></i> ' + await t('[[chat-read-receipts:read-by-all]]'),
 				cls: 'read',
-				title: format(txt.readByNames, readerNames.join(', ')),
+				title: format(await t('[[chat-read-receipts:read-by-names]]'), readerNames),
 			};
 		}
 		return {
-			html: '<i class="fa fa-eye"></i> ' + format(txt.readByN, readers.length + '/' + totalOthers),
+			html: '<i class="fa fa-eye"></i> ' + format(await t('[[chat-read-receipts:read-by-n]]'), readers.length + '/' + totalOthers),
 			cls: 'partial',
-			title: format(txt.readByNames, readerNames.join(', ')),
+			title: format(await t('[[chat-read-receipts:read-by-names]]'), readerNames),
 		};
 	}
 
-	function renderContainer(containerEl, state) {
+	async function renderContainer(containerEl, state) {
 		const mine = myUid();
-		containerEl.find('[component="chat/message"]').each(function () {
-			const msgEl = $(this);
+		const msgs = containerEl.find('[component="chat/message"]').toArray();
+		for (const el of msgs) {
+			const msgEl = $(el);
 			if (parseInt(msgEl.attr('data-uid'), 10) !== mine) {
-				return;
+				continue;
 			}
 			if (msgEl.hasClass('deleted')) {
 				msgEl.find('.chat-read-receipt').remove();
-				return;
+				continue;
 			}
 			const msgTs = parseInt(msgEl.attr('data-timestamp'), 10) || 0;
-			const receipt = buildReceipt(state, msgTs);
+			const receipt = await buildReceipt(state, msgTs); // eslint-disable-line no-await-in-loop
 
-			let el = msgEl.find('> .chat-read-receipt');
-			if (!el.length) {
-				el = $('<div class="chat-read-receipt"></div>');
-				msgEl.append(el);
+			let rEl = msgEl.find('> .chat-read-receipt');
+			if (!rEl.length) {
+				rEl = $('<div class="chat-read-receipt"></div>');
+				msgEl.append(rEl);
 			}
-			el.attr('class', 'chat-read-receipt chat-read-receipt-' + receipt.cls)
+			rEl.attr('class', 'chat-read-receipt chat-read-receipt-' + receipt.cls)
 				.attr('title', receipt.title)
 				.html(receipt.html);
-		});
+		}
 	}
 
 	function renderRoom(roomId) {
@@ -201,8 +191,7 @@
 		markVisibleRoomsSeen();
 	}
 
-	// Bind DOM/window listeners only once, even if this script is loaded twice
-	// (it is registered via both plugin.json "scripts" and filter:scripts.client).
+	// Bind DOM/window listeners only once.
 	function bindDom() {
 		if (RR.domBound) {
 			return;

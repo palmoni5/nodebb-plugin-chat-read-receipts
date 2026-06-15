@@ -5,8 +5,7 @@
   "library": "./library.js",
   "languages": "./languages",
   "hooks": [
-    { "hook": "static:app.load", "method": "init" },
-    { "hook": "filter:scripts.client", "method": "addClientScript" }
+    { "hook": "static:app.load", "method": "init" }
   ],
   "scripts": [
     "static/lib/main.js"
