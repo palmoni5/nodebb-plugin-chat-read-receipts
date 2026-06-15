@@ -11,10 +11,16 @@
 	RR.lastMarkSeen = RR.lastMarkSeen || {};
 	RR.socketBound = RR.socketBound || false;
 
+	// Cache translation promises so each string is only resolved once, even when
+	// many messages request the same label.
+	const translationCache = {};
 	function t(str) {
-		return new Promise(resolve => require(['translator'], translator =>
-			translator.translate(str, resolve)
-		));
+		if (!translationCache[str]) {
+			translationCache[str] = new Promise(resolve => require(['translator'], translator =>
+				translator.translate(str, resolve)
+			));
+		}
+		return translationCache[str];
 	}
 
 	function myUid() {
@@ -96,27 +102,38 @@
 	async function renderContainer(containerEl, state) {
 		const mine = myUid();
 		const msgs = containerEl.find('[component="chat/message"]').toArray();
-		for (const el of msgs) {
+
+		// Build all receipts in parallel, then apply them to the DOM synchronously.
+		const items = await Promise.all(msgs.map(async (el) => {
 			const msgEl = $(el);
 			if (parseInt(msgEl.attr('data-uid'), 10) !== mine) {
-				continue;
+				return null;
 			}
 			if (msgEl.hasClass('deleted')) {
-				msgEl.find('.chat-read-receipt').remove();
-				continue;
+				return { msgEl, deleted: true };
 			}
 			const msgTs = parseInt(msgEl.attr('data-timestamp'), 10) || 0;
-			const receipt = await buildReceipt(state, msgTs); // eslint-disable-line no-await-in-loop
+			const receipt = await buildReceipt(state, msgTs);
+			return { msgEl, receipt };
+		}));
 
-			let rEl = msgEl.find('> .chat-read-receipt');
+		items.forEach((item) => {
+			if (!item) {
+				return;
+			}
+			if (item.deleted) {
+				item.msgEl.find('.chat-read-receipt').remove();
+				return;
+			}
+			let rEl = item.msgEl.find('> .chat-read-receipt');
 			if (!rEl.length) {
 				rEl = $('<div class="chat-read-receipt"></div>');
-				msgEl.append(rEl);
+				item.msgEl.append(rEl);
 			}
-			rEl.attr('class', 'chat-read-receipt chat-read-receipt-' + receipt.cls)
-				.attr('title', receipt.title)
-				.html(receipt.html);
-		}
+			rEl.attr('class', 'chat-read-receipt chat-read-receipt-' + item.receipt.cls)
+				.attr('title', item.receipt.title)
+				.html(item.receipt.html);
+		});
 	}
 
 	function renderRoom(roomId) {
