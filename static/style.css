@@ -1,0 +1,27 @@
+.chat-read-receipt {
+	font-size: 0.7rem;
+	line-height: 1;
+	text-align: end;
+	margin-top: 2px;
+	padding-inline-end: 0.25rem;
+	white-space: nowrap;
+	user-select: none;
+}
+
+.chat-read-receipt i {
+	margin-inline-end: 2px;
+}
+
+.chat-read-receipt-sent {
+	color: var(--bs-secondary-color, #9aa0a6);
+}
+
+.chat-read-receipt-partial {
+	color: var(--bs-secondary-color, #9aa0a6);
+}
+
+.chat-read-receipt-read {
+	color: var(--bs-primary, #0d6efd);
+}
+
+/* RTL alignment is handled by text-align: end + padding-inline-end above. */

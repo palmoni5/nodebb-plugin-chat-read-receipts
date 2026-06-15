@@ -1,0 +1,17 @@
+{
+  "id": "nodebb-plugin-chat-read-receipts",
+  "name": "Chat Read Receipts",
+  "description": "Shows next to each chat message whether the other participant(s) have read it.",
+  "library": "./library.js",
+  "languages": "./languages",
+  "hooks": [
+    { "hook": "static:app.load", "method": "init" },
+    { "hook": "filter:scripts.client", "method": "addClientScript" }
+  ],
+  "scripts": [
+    "static/lib/main.js"
+  ],
+  "css": [
+    "static/style.css"
+  ]
+}
