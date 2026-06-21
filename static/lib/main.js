@@ -125,10 +125,15 @@
 				item.msgEl.find('.chat-read-receipt').remove();
 				return;
 			}
-			let rEl = item.msgEl.find('> .chat-read-receipt');
+			const body = item.msgEl.find('[component="chat/message/body"]');
+			let rEl = body.find('.chat-read-receipt');
 			if (!rEl.length) {
-				rEl = $('<div class="chat-read-receipt"></div>');
-				item.msgEl.append(rEl);
+				rEl = $('<span class="chat-read-receipt"></span>');
+				// Append inside the message text (the trailing block, usually the
+				// last <p>) so the receipt floats onto the end of the final line
+				// instead of taking a separate row beneath the message.
+				const host = body.children().last();
+				(host.length ? host : body).append(rEl);
 			}
 			rEl.attr('class', 'chat-read-receipt chat-read-receipt-' + item.receipt.cls)
 				.attr('title', item.receipt.title)
