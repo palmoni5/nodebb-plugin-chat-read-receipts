@@ -10,6 +10,8 @@
 	RR.loading = RR.loading || {};
 	RR.lastMarkSeen = RR.lastMarkSeen || {};
 	RR.socketBound = RR.socketBound || false;
+	// Events that arrive while state is still loading, keyed by roomId.
+	RR.pendingEvents = RR.pendingEvents || {};
 
 	// Cache translation promises so each string is only resolved once, even when
 	// many messages request the same label.
@@ -42,6 +44,14 @@
 		});
 	}
 
+	function applySeenEvent(state, data) {
+		const uid = parseInt(data.uid, 10);
+		if (!state.byUid[uid]) {
+			state.byUid[uid] = { ts: 0, name: '' };
+		}
+		state.byUid[uid].ts = Math.max(state.byUid[uid].ts, parseInt(data.timestamp, 10) || 0);
+	}
+
 	function loadRoomState(roomId, callback) {
 		if (RR.loading[roomId]) {
 			return;
@@ -57,6 +67,13 @@
 				byUid[u.uid] = { ts: parseInt(u.timestamp, 10) || 0, name: u.username };
 			});
 			RR.rooms[roomId] = { count: data.participantCount, byUid: byUid };
+
+			// Apply any seen events that arrived while state was loading.
+			if (RR.pendingEvents[roomId]) {
+				RR.pendingEvents[roomId].forEach(ev => applySeenEvent(RR.rooms[roomId], ev));
+				delete RR.pendingEvents[roomId];
+			}
+
 			renderRoom(roomId);
 			if (typeof callback === 'function') {
 				callback();
@@ -196,13 +213,14 @@
 			const roomId = parseInt(data.roomId, 10);
 			const state = RR.rooms[roomId];
 			if (!state) {
+				// State is still loading — queue so the event isn't lost.
+				if (!RR.pendingEvents[roomId]) {
+					RR.pendingEvents[roomId] = [];
+				}
+				RR.pendingEvents[roomId].push(data);
 				return;
 			}
-			const uid = parseInt(data.uid, 10);
-			if (!state.byUid[uid]) {
-				state.byUid[uid] = { ts: 0, name: '' };
-			}
-			state.byUid[uid].ts = Math.max(state.byUid[uid].ts, parseInt(data.timestamp, 10) || 0);
+			applySeenEvent(state, data);
 			renderRoom(roomId);
 		});
 	}
