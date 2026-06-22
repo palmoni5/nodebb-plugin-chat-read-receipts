@@ -206,6 +206,17 @@
 			return;
 		}
 		RR.socketBound = true;
+
+		// NodeBB fires this whenever the REST API marks a room as read
+		// (opening a modal, maximizing from taskbar, mousemove on unread modal, etc.).
+		// Piggybacking on it ensures we never miss a read that the core already detected.
+		socket.on('event:chats.markedAsRead', function (data) {
+			if (!data || !data.roomId) {
+				return;
+			}
+			markSeen(parseInt(data.roomId, 10));
+		});
+
 		socket.on('event:chat-read-receipts.seen', function (data) {
 			if (!data || !data.roomId) {
 				return;
