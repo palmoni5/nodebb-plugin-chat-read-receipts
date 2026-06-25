@@ -27,8 +27,15 @@ async function assertInRoom(uid, roomId) {
 	if (!(parseInt(uid, 10) > 0) || !(parseInt(roomId, 10) > 0)) {
 		throw new Error('[[error:invalid-data]]');
 	}
-	const inRoom = await Messaging.isUserInRoom(uid, roomId);
-	if (!inRoom) {
+	// Check real room membership directly against the membership sorted set,
+	// NOT via Messaging.isUserInRoom. The latter runs the result through the
+	// filter:messaging.isUserInRoom hook, which other plugins (e.g.
+	// nodebb-plugin-admin-chats) override to return true for admins/managers
+	// who are merely viewing the room. Honouring that override here would let a
+	// lurking admin's view be recorded and broadcast as a read receipt, leaking
+	// the admin's presence to the real participants.
+	const isMember = await db.isSortedSetMember(`chat:room:${roomId}:uids`, uid);
+	if (!isMember) {
 		throw new Error('[[error:no-privileges]]');
 	}
 }
