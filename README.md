@@ -1,39 +1,55 @@
 # nodebb-plugin-chat-read-receipts
 
-Adds WhatsApp-style **read receipts** to NodeBB chat. Next to each of your own
-outgoing messages a small indicator shows whether the other participant(s) have
-read it.
+Adds WhatsApp-style **read receipts** and an **unread messages divider** to
+NodeBB chat.
 
-## What is displayed
+## Features
 
-The indicator is only shown on **your own** messages (you never see receipts on
-other people's messages — same as WhatsApp).
+### Read receipts
 
-**One-on-one rooms** (you + one other person):
-- `✓` (grey) — **Sent**, not read yet.
-- `✓✓` (blue) — **Read** by the other person.
+A small indicator is shown next to each of **your own** outgoing messages
+(never on other people's messages — same as WhatsApp).
 
-**Group rooms** (more than one other participant) — read state is per-message,
-based on each participant's last-seen time:
+**One-on-one rooms:**
+- `✓` (grey) — Sent, not read yet.
+- `✓✓` (blue) — Read by the other person.
+
+**Group rooms** — based on each participant's last-seen time:
 - `✓` (grey) — nobody else has read it yet.
-- `👁 Read by k/N` — read by some of the `N` other participants. Hover to see
-  the list of names.
+- `👁 Read by k/N` — read by some participants. Hover to see names.
 - `✓✓ Read by all` (blue) — every other participant has read it.
+
+Receipts update live as participants read messages, and also render correctly
+for messages loaded lazily when scrolling up.
+
+### Unread messages divider
+
+When you open a chat that has unread messages, a dashed **"New messages"**
+divider bar is inserted before the first unread message and the view scrolls
+to it automatically (with a small amount of context shown above).
+
+- Works in both popup (minimized) chat windows and the full-page
+  `/user/:uid/chats/` view, including sidebar room switching.
+- The divider disappears once you close and reopen the chat after reading.
+- If a new message arrives while the chat is open but you are on a different
+  tab/window, the divider repositions to that message.
+- If all unread messages are above the initially-loaded batch, the plugin loads
+  older messages until it finds the boundary (up to 50 batches).
 
 ## How it works
 
-- NodeBB already tracks a per-user, per-room "last read" timestamp. A message is
-  considered "read" by a participant when that participant's last-seen time for
-  the room is at or after the message's timestamp.
-- When you open/focus a chat room, your client tells the server you've seen it
-  (`plugins.chatReadReceipts.markSeen`). The server records the timestamp and
-  broadcasts it to everyone currently in the room, so receipts update live.
-- On load, the client fetches the per-participant read state
-  (`plugins.chatReadReceipts.getRoomReadState`) and renders the indicators.
-
-No core files are modified.
+- When you open a chat, the plugin fetches the per-participant read state
+  (`plugins.chatReadReceipts.getRoomReadState`) **before** recording your
+  visit, so the pre-visit "last seen" timestamp is used to locate the first
+  unread message.
+- After rendering the divider, your client sends the timestamp of the last
+  loaded message to the server (`plugins.chatReadReceipts.markSeen`). The
+  server broadcasts the update so other participants' receipts refresh live.
+- The `markSeen` call uses the timestamp of the last message in the DOM — not
+  `Date.now()` — so messages that arrive after the snapshot are not
+  accidentally marked as read.
 
 ## Privacy note
 
 Read receipts are symmetric: if you can see whether others read your messages,
-they can see whether you read theirs (it is tied to focusing the room).
+they can see whether you read theirs.
