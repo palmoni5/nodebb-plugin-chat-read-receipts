@@ -229,14 +229,29 @@
 		containerEl[0].removeAttribute('data-rr-divider-pending');
 
 		if (opts.scroll !== false) {
-			// message-window.tpl's rAF checks for '.chat-unread-divider' and scrolls
-			// to it if found (fast socket path).  For slower connections the rAF has
-			// already fired without the divider; scroll here instead.
-			requestAnimationFrame(function () {
-				if (divider.closest('[component="chat/message/content"]').length) {
-					divider[0].scrollIntoView(true);
-				}
-			});
+			const el = containerEl[0];
+			if (el.classList.contains('invisible')) {
+				// The template's inline rAF hasn't fired yet.  It will scroll to
+				// bottom and then remove 'invisible'.  Observe that class removal
+				// and scroll to the divider immediately after — this fires right
+				// after the rAF and always wins the race, without touching core.
+				const obs = new MutationObserver(function () {
+					if (!el.classList.contains('invisible')) {
+						obs.disconnect();
+						if (divider.closest('[component="chat/message/content"]').length) {
+							divider[0].scrollIntoView(true);
+						}
+					}
+				});
+				obs.observe(el, { attributes: true, attributeFilter: ['class'] });
+			} else {
+				// rAF already fired (slow socket path) — scroll directly.
+				requestAnimationFrame(function () {
+					if (divider.closest('[component="chat/message/content"]').length) {
+						divider[0].scrollIntoView(true);
+					}
+				});
+			}
 		}
 	}
 
