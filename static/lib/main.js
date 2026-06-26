@@ -12,6 +12,8 @@
 	RR.socketBound = RR.socketBound || false;
 	// Events that arrive while state is still loading, keyed by roomId.
 	RR.pendingEvents = RR.pendingEvents || {};
+	// Rooms that need the unread divider inserted on next render.
+	RR.dividerNeeded = RR.dividerNeeded || {};
 
 	// Cache translation promises so each string is only resolved once, even when
 	// many messages request the same label.
@@ -75,6 +77,19 @@
 			}
 
 			renderRoom(roomId);
+
+			// Mark the room seen NOW — after we've rendered with the pre-visit state.
+			// Calling markSeen here (not in onRoomActivity) guarantees the server has
+			// already returned the old myTs before we update it to the latest message ts.
+			if (document.hasFocus && document.hasFocus() && !document.hidden) {
+				$('[component="chat/message/content"][data-roomid="' + roomId + '"]').each(function () {
+					const el = $(this);
+					if (el.is(':visible')) {
+						markSeen(roomId, el);
+					}
+				});
+			}
+
 			if (typeof callback === 'function') {
 				callback();
 			}
@@ -143,14 +158,10 @@
 				return;
 			}
 			const body = item.msgEl.find('[component="chat/message/body"]');
-			let rEl = body.find('.chat-read-receipt');
+			let rEl = body.children('.chat-read-receipt');
 			if (!rEl.length) {
 				rEl = $('<span class="chat-read-receipt"></span>');
-				// Append inside the message text (the trailing block, usually the
-				// last <p>) so the receipt floats onto the end of the final line
-				// instead of taking a separate row beneath the message.
-				const host = body.children().last();
-				(host.length ? host : body).append(rEl);
+				body.append(rEl);
 			}
 			rEl.attr('class', 'chat-read-receipt chat-read-receipt-' + item.receipt.cls)
 				.attr('title', item.receipt.title)
@@ -158,13 +169,91 @@
 		});
 	}
 
+	function insertUnreadDivider(containerEl, roomId, state, opts) {
+		opts = opts || {};
+		containerEl.find('.chat-unread-divider').remove();
+
+		const myState = state.byUid[myUid()];
+		const myTs = myState ? myState.ts : 0;
+		if (myTs === 0) {
+			containerEl[0].removeAttribute('data-rr-divider-pending');
+			return;
+		}
+
+		const msgs = containerEl.find('[component="chat/message"]').toArray();
+		let firstUnreadEl = null;
+		let hasReadBefore = false;
+
+		for (const el of msgs) {
+			const msgTs = parseInt($(el).attr('data-timestamp'), 10) || 0;
+			if (msgTs <= myTs) {
+				hasReadBefore = true;
+			} else if (!firstUnreadEl) {
+				firstUnreadEl = el;
+				break;
+			}
+		}
+
+		if (!firstUnreadEl) {
+			containerEl[0].removeAttribute('data-rr-divider-pending');
+			return; // all messages already read
+		}
+
+		if (!hasReadBefore) {
+			// All currently-loaded messages are unread — the boundary lies in
+			// older messages not yet in the DOM.  Load one more batch and retry.
+			if ((opts.depth || 0) >= 50) {
+				return; // give up after 50 pages to avoid infinite loops
+			}
+			const countBefore = msgs.length;
+			require(['forum/chats/messages'], function (messages) {
+				messages.loadMoreMessages(containerEl, myUid(), roomId, -1).then(function () {
+					const countAfter = containerEl.find('[component="chat/message"]').length;
+					if (countAfter > countBefore) {
+						insertUnreadDivider(containerEl, roomId, state,
+							Object.assign({}, opts, { depth: (opts.depth || 0) + 1 }));
+					}
+				}).catch(function () {});
+			});
+			return;
+		}
+
+		const divider = $('<div class="chat-unread-divider"><span></span></div>');
+		$(firstUnreadEl).before(divider);
+
+		t('[[chat-read-receipts:new-messages]]').then(function (label) {
+			divider.find('span').text(label);
+		});
+
+		// Clear the pending flag — we've decided whether a divider is needed.
+		containerEl[0].removeAttribute('data-rr-divider-pending');
+
+		if (opts.scroll !== false) {
+			// message-window.tpl's rAF checks for '.chat-unread-divider' and scrolls
+			// to it if found (fast socket path).  For slower connections the rAF has
+			// already fired without the divider; scroll here instead.
+			requestAnimationFrame(function () {
+				if (divider.closest('[component="chat/message/content"]').length) {
+					divider[0].scrollIntoView(true);
+				}
+			});
+		}
+	}
+
 	function renderRoom(roomId) {
 		const state = RR.rooms[roomId];
 		if (!state) {
 			return;
 		}
+		const needsDivider = !!RR.dividerNeeded[roomId];
+		delete RR.dividerNeeded[roomId];
+
 		$('[component="chat/message/content"][data-roomid="' + roomId + '"]').each(function () {
-			renderContainer($(this), state);
+			const containerEl = $(this);
+			if (needsDivider && containerEl.is(':visible')) {
+				insertUnreadDivider(containerEl, roomId, state);
+			}
+			renderContainer(containerEl, state);
 		});
 	}
 
@@ -178,15 +267,29 @@
 		});
 	}
 
-	// Tell the server we (the local user) have seen this room's messages, so the
-	// other participants' clients can update their receipts. Debounced per room.
-	function markSeen(roomId) {
+	// Tell the server we (the local user) have seen this room's messages.
+	// Pass the timestamp of the last message currently in the DOM — NOT Date.now() —
+	// so messages that arrive after the DOM was loaded aren't accidentally marked read.
+	function markSeen(roomId, containerEl) {
 		const now = Date.now();
 		if (RR.lastMarkSeen[roomId] && (now - RR.lastMarkSeen[roomId]) < 1000) {
 			return;
 		}
 		RR.lastMarkSeen[roomId] = now;
-		socket.emit('plugins.chatReadReceipts.markSeen', { roomId: roomId }, function () {});
+
+		let ts = 0;
+		if (containerEl) {
+			const msgs = containerEl.find('[component="chat/message"]');
+			if (msgs.length) {
+				ts = parseInt(msgs.last().attr('data-timestamp'), 10) || 0;
+			}
+		}
+		// Fall back to Date.now() only if we couldn't find any message timestamp.
+		if (!ts) {
+			ts = now;
+		}
+
+		socket.emit('plugins.chatReadReceipts.markSeen', { roomId: roomId, timestamp: ts }, function () {});
 	}
 
 	function markVisibleRoomsSeen() {
@@ -194,11 +297,15 @@
 			return;
 		}
 		eachRoomContainer(function (el, roomId) {
-			// Only mark a room seen if its message window is actually visible.
 			if (el.is(':visible')) {
-				markSeen(roomId);
+				markSeen(roomId, el);
 			}
 		});
+	}
+
+	function removeDivider(roomId) {
+		$('[component="chat/message/content"][data-roomid="' + roomId + '"]')
+			.find('.chat-unread-divider').remove();
 	}
 
 	function bindSocket() {
@@ -207,15 +314,12 @@
 		}
 		RR.socketBound = true;
 
-		// NodeBB fires this whenever the REST API marks a room as read
-		// (opening a modal, maximizing from taskbar, mousemove on unread modal, etc.).
-		// Piggybacking on it ensures we never miss a read that the core already detected.
-		socket.on('event:chats.markedAsRead', function (data) {
-			if (!data || !data.roomId) {
-				return;
-			}
-			markSeen(parseInt(data.roomId, 10));
-		});
+		// NodeBB fires this when it marks a room read internally.
+		// We intentionally do NOT call markSeen here — doing so would set myTs=now
+		// BEFORE loadRoomState returns, causing the divider logic to see all messages
+		// as already read.  markVisibleRoomsSeen() in onRoomActivity handles this in
+		// the correct order (getRoomReadState emitted first, markSeen second).
+		socket.on('event:chats.markedAsRead', function () {});
 
 		socket.on('event:chat-read-receipts.seen', function (data) {
 			if (!data || !data.roomId) {
@@ -239,7 +343,9 @@
 	function onRoomActivity() {
 		bindSocket();
 		renderAll();
-		markVisibleRoomsSeen();
+		// markVisibleRoomsSeen() is NOT called here — it runs inside loadRoomState's
+		// callback (after the server has returned the pre-visit myTs) and from the
+		// focus/visibilitychange/chat.received handlers below.
 	}
 
 	// Bind DOM/window listeners only once.
@@ -249,14 +355,80 @@
 		}
 		RR.domBound = true;
 
+		// Intercept NodeBB's scrollToBottomAfterImageLoad so it doesn't override
+		// our divider scroll when a divider is pending or already present.
+		require(['forum/chats/messages'], function (messagesModule) {
+			if (messagesModule._rrPatched) {
+				return;
+			}
+			messagesModule._rrPatched = true;
+			const orig = messagesModule.scrollToBottomAfterImageLoad;
+			messagesModule.scrollToBottomAfterImageLoad = function (containerEl) {
+				if (containerEl && containerEl.length) {
+					const el = containerEl[0];
+					if (el.hasAttribute('data-rr-divider-pending') ||
+							el.querySelector('.chat-unread-divider')) {
+						return;
+					}
+				}
+				return orig.call(messagesModule, containerEl);
+			};
+		});
+
+		// On close, drop the cached state so the next open always re-fetches
+		// a fresh read-timestamp from the server.
+		$(window).on('action:chat.closed', function (ev, data) {
+			if (!data || !data.modal) {
+				return;
+			}
+			const roomId = parseInt(data.modal.attr('data-roomid'), 10);
+			if (roomId > 0) {
+				delete RR.rooms[roomId];
+				delete RR.lastMarkSeen[roomId];
+			}
+		});
+
 		$(window).on('action:ajaxify.end', onRoomActivity);
-		$(window).on('action:chat.loaded', onRoomActivity);
+		$(window).on('action:chat.loaded', function () {
+			eachRoomContainer(function (el, roomId) {
+				// Drop cached state so the next loadRoomState always fetches a
+				// fresh timestamp — covers the full-page room-switch case where
+				// action:chat.closed is never fired.
+				delete RR.rooms[roomId];
+				delete RR.lastMarkSeen[roomId];
+				RR.dividerNeeded[roomId] = true;
+				// Signal to message-window.tpl's rAF and our scrollToBottom
+				// intercept that a divider may be coming — don't scroll to bottom yet.
+				el[0].setAttribute('data-rr-divider-pending', '1');
+			});
+			onRoomActivity();
+		});
 
 		// A new message was appended (incoming or our own). Re-render and, if it
 		// arrived while we're watching, mark the room seen.
 		$(window).on('action:chat.received', function () {
 			renderAll();
 			markVisibleRoomsSeen();
+			// If the user is not actively viewing, the new message is unread —
+			// re-position the divider to the first message after their last-seen timestamp.
+			if (document.hidden || !document.hasFocus()) {
+				eachRoomContainer(function (el, roomId) {
+					if (!el.is(':visible')) {
+						return;
+					}
+					const state = RR.rooms[roomId];
+					if (!state) {
+						return;
+					}
+					insertUnreadDivider(el, roomId, state, { scroll: false });
+				});
+			}
+		});
+
+		// Re-render receipts whenever a batch of messages is added to the DOM
+		// (both on initial load and on scroll-up lazy loading).
+		$(window).on('action:chat.onMessagesAddedToDom', function () {
+			renderAll();
 		});
 
 		$(window).on('action:chat.sent', function () {

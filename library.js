@@ -47,16 +47,20 @@ async function markSeen(socket, data) {
 	const roomId = data && parseInt(data.roomId, 10);
 	await assertInRoom(uid, roomId);
 
+	// Accept a client-supplied timestamp (the ts of the last message they actually
+	// loaded), but never allow it to exceed now (prevents abuse / clock skew).
+	const clientTs = data && parseInt(data.timestamp, 10);
 	const now = Date.now();
-	await db.setObjectField(roomKey(roomId), uid, now);
+	const ts = (clientTs > 0 && clientTs <= now) ? clientTs : now;
+	await db.setObjectField(roomKey(roomId), uid, ts);
 
 	sockets.in(`chat_room_${roomId}`).emit('event:chat-read-receipts.seen', {
 		roomId: roomId,
 		uid: parseInt(uid, 10),
-		timestamp: now,
+		timestamp: ts,
 	});
 
-	return { timestamp: now };
+	return { timestamp: ts };
 }
 
 // Returns the last-seen timestamp for every participant of the room, so a client
