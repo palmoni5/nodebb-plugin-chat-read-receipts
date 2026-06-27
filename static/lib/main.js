@@ -196,6 +196,13 @@
 
 		if (!firstUnreadEl) {
 			containerEl[0].removeAttribute('data-rr-divider-pending');
+			if (opts.scroll !== false) {
+				// No unread boundary — restore normal scroll-to-bottom.
+				// The attribute is already removed so our monkey-patch won't block this call.
+				require(['forum/chats/messages'], function (messages) {
+					messages.scrollToBottomAfterImageLoad(containerEl);
+				});
+			}
 			return; // all messages already read
 		}
 
