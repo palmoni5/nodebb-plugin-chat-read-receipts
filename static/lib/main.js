@@ -12,8 +12,6 @@
 	RR.socketBound = RR.socketBound || false;
 	// Events that arrive while state is still loading, keyed by roomId.
 	RR.pendingEvents = RR.pendingEvents || {};
-	// Rooms that need the unread divider inserted on next render.
-	RR.dividerNeeded = RR.dividerNeeded || {};
 
 	// Cache translation promises so each string is only resolved once, even when
 	// many messages request the same label.
@@ -76,7 +74,16 @@
 				delete RR.pendingEvents[roomId];
 			}
 
-			renderRoom(roomId);
+			const state = RR.rooms[roomId];
+			$('[component="chat/message/content"][data-roomid="' + roomId + '"]').each(function () {
+				const containerEl = $(this);
+				renderContainer(containerEl, state);
+				// One-time only: if this container was just opened, position the view
+				// at the first unread message (or leave native scroll-to-bottom alone).
+				if (containerEl[0].hasAttribute('data-rr-initial')) {
+					positionInitialView(containerEl, roomId);
+				}
+			});
 
 			// Mark the room seen NOW — after we've rendered with the pre-visit state.
 			// Calling markSeen here (not in onRoomActivity) guarantees the server has
@@ -157,11 +164,17 @@
 				item.msgEl.find('.chat-read-receipt').remove();
 				return;
 			}
-			const body = item.msgEl.find('[component="chat/message/body"]');
-			let rEl = body.children('.chat-read-receipt');
+			// Attach to the message-body-wrapper (NOT the body itself, which has
+			// overflow-auto and would clip an absolutely-positioned child) so the
+			// receipt can sit pinned to the bottom corner of the message.
+			let host = item.msgEl.find('.message-body-wrapper');
+			if (!host.length) {
+				host = item.msgEl.find('[component="chat/message/body"]');
+			}
+			let rEl = host.children('.chat-read-receipt');
 			if (!rEl.length) {
 				rEl = $('<span class="chat-read-receipt"></span>');
-				body.append(rEl);
+				host.append(rEl);
 			}
 			rEl.attr('class', 'chat-read-receipt chat-read-receipt-' + item.receipt.cls)
 				.attr('title', item.receipt.title)
@@ -169,14 +182,44 @@
 		});
 	}
 
-	function insertUnreadDivider(containerEl, roomId, state, opts) {
+	// Restore NodeBB's native scroll-to-bottom for a freshly-opened container and
+	// clear the one-shot flag so the scroll patch never touches this room again.
+	function finishInitial(containerEl, scrollToBottom) {
+		containerEl[0].removeAttribute('data-rr-initial');
+		if (scrollToBottom) {
+			require(['forum/chats/messages'], function (messages) {
+				// Flag is cleared, so the patched fn falls through to the original.
+				messages.scrollToBottomAfterImageLoad(containerEl);
+			});
+		}
+	}
+
+	// Called exactly once per room open. If there are unread messages, insert the
+	// "new messages" divider and scroll to it; otherwise leave NodeBB's normal
+	// scroll-to-bottom behaviour completely untouched.
+	function positionInitialView(containerEl, roomId, opts) {
 		opts = opts || {};
+		const state = RR.rooms[roomId];
+		if (!state) {
+			finishInitial(containerEl, true);
+			return;
+		}
 		containerEl.find('.chat-unread-divider').remove();
 
-		const myState = state.byUid[myUid()];
-		const myTs = myState ? myState.ts : 0;
+		// Capture the pre-visit last-seen timestamp ONCE and thread it through the
+		// (async) load-more retries below. Our own markSeen fires right after this in
+		// loadRoomState and round-trips an event:chat-read-receipts.seen that bumps
+		// state.byUid[me].ts up to the latest message. If a retry re-read myTs from
+		// state, every message would suddenly look read and the divider would vanish.
+		let myTs = opts.baselineTs;
+		if (myTs === undefined) {
+			const myState = state.byUid[myUid()];
+			myTs = myState ? myState.ts : 0;
+			opts.baselineTs = myTs;
+		}
 		if (myTs === 0) {
-			containerEl[0].removeAttribute('data-rr-divider-pending');
+			// No recorded last-seen timestamp — treat as nothing-unread: native bottom.
+			finishInitial(containerEl, true);
 			return;
 		}
 
@@ -195,32 +238,31 @@
 		}
 
 		if (!firstUnreadEl) {
-			containerEl[0].removeAttribute('data-rr-divider-pending');
-			if (opts.scroll !== false) {
-				// No unread boundary — restore normal scroll-to-bottom.
-				// The attribute is already removed so our monkey-patch won't block this call.
-				require(['forum/chats/messages'], function (messages) {
-					messages.scrollToBottomAfterImageLoad(containerEl);
-				});
-			}
-			return; // all messages already read
+			// All loaded messages already read — native scroll-to-bottom.
+			finishInitial(containerEl, true);
+			return;
 		}
 
 		if (!hasReadBefore) {
-			// All currently-loaded messages are unread — the boundary lies in
-			// older messages not yet in the DOM.  Load one more batch and retry.
+			// All currently-loaded messages are unread — the boundary lies in older
+			// messages not yet in the DOM. Load one more batch and retry.
 			if ((opts.depth || 0) >= 50) {
-				return; // give up after 50 pages to avoid infinite loops
+				finishInitial(containerEl, true); // give up; behave like native.
+				return;
 			}
 			const countBefore = msgs.length;
 			require(['forum/chats/messages'], function (messages) {
 				messages.loadMoreMessages(containerEl, myUid(), roomId, -1).then(function () {
 					const countAfter = containerEl.find('[component="chat/message"]').length;
 					if (countAfter > countBefore) {
-						insertUnreadDivider(containerEl, roomId, state,
+						positionInitialView(containerEl, roomId,
 							Object.assign({}, opts, { depth: (opts.depth || 0) + 1 }));
+					} else {
+						finishInitial(containerEl, true);
 					}
-				}).catch(function () {});
+				}).catch(function () {
+					finishInitial(containerEl, true);
+				});
 			});
 			return;
 		}
@@ -232,57 +274,28 @@
 			divider.find('span').text(label);
 		});
 
-		// Clear the pending flag — we've decided whether a divider is needed.
-		containerEl[0].removeAttribute('data-rr-divider-pending');
-
-		if (opts.scroll !== false) {
-			const el = containerEl[0];
-			if (el.classList.contains('invisible')) {
-				// The template's inline rAF hasn't fired yet.  It will scroll to
-				// bottom and then remove 'invisible'.  Observe that class removal
-				// and scroll to the divider immediately after — this fires right
-				// after the rAF and always wins the race, without touching core.
-				const obs = new MutationObserver(function () {
-					if (!el.classList.contains('invisible')) {
-						obs.disconnect();
-						if (divider.closest('[component="chat/message/content"]').length) {
-							divider[0].scrollIntoView(true);
-						}
-					}
-				});
-				obs.observe(el, { attributes: true, attributeFilter: ['class'] });
-			} else {
-				// rAF already fired (slow socket path) — scroll directly.
-				requestAnimationFrame(function () {
-					if (divider.closest('[component="chat/message/content"]').length) {
-						divider[0].scrollIntoView(true);
-					}
-				});
-			}
-		}
+		// We own the scroll now: clear the flag and scroll to the divider once,
+		// using NodeBB's image-aware helper so image height shifts are accounted for.
+		containerEl[0].removeAttribute('data-rr-initial');
+		require(['forum/chats/messages'], function (messages) {
+			messages.scrollToMessageAfterImageLoad(containerEl, divider);
+		});
 	}
 
-	function renderRoom(roomId) {
+	function renderRoomReceipts(roomId) {
 		const state = RR.rooms[roomId];
 		if (!state) {
 			return;
 		}
-		const needsDivider = !!RR.dividerNeeded[roomId];
-		delete RR.dividerNeeded[roomId];
-
 		$('[component="chat/message/content"][data-roomid="' + roomId + '"]').each(function () {
-			const containerEl = $(this);
-			if (needsDivider && containerEl.is(':visible')) {
-				insertUnreadDivider(containerEl, roomId, state);
-			}
-			renderContainer(containerEl, state);
+			renderContainer($(this), state);
 		});
 	}
 
-	function renderAll() {
+	function renderAllReceipts() {
 		eachRoomContainer(function (el, roomId) {
 			if (RR.rooms[roomId]) {
-				renderRoom(roomId);
+				renderRoomReceipts(roomId);
 			} else {
 				loadRoomState(roomId);
 			}
@@ -325,11 +338,6 @@
 		});
 	}
 
-	function removeDivider(roomId) {
-		$('[component="chat/message/content"][data-roomid="' + roomId + '"]')
-			.find('.chat-unread-divider').remove();
-	}
-
 	function bindSocket() {
 		if (RR.socketBound || typeof socket === 'undefined') {
 			return;
@@ -358,13 +366,13 @@
 				return;
 			}
 			applySeenEvent(state, data);
-			renderRoom(roomId);
+			renderRoomReceipts(roomId);
 		});
 	}
 
 	function onRoomActivity() {
 		bindSocket();
-		renderAll();
+		renderAllReceipts();
 		// markVisibleRoomsSeen() is NOT called here — it runs inside loadRoomState's
 		// callback (after the server has returned the pre-visit myTs) and from the
 		// focus/visibilitychange/chat.received handlers below.
@@ -377,8 +385,10 @@
 		}
 		RR.domBound = true;
 
-		// Intercept NodeBB's scrollToBottomAfterImageLoad so it doesn't override
-		// our divider scroll when a divider is pending or already present.
+		// Intercept NodeBB's scrollToBottomAfterImageLoad ONLY during the one-time
+		// initial open of a room (while we wait for its read-state from the server).
+		// The gate is a one-shot per-container flag — never divider presence — so
+		// once a room is open, every later scroll behaves exactly like core NodeBB.
 		require(['forum/chats/messages'], function (messagesModule) {
 			if (messagesModule._rrPatched) {
 				return;
@@ -386,12 +396,9 @@
 			messagesModule._rrPatched = true;
 			const orig = messagesModule.scrollToBottomAfterImageLoad;
 			messagesModule.scrollToBottomAfterImageLoad = function (containerEl) {
-				if (containerEl && containerEl.length) {
-					const el = containerEl[0];
-					if (el.hasAttribute('data-rr-divider-pending') ||
-							el.querySelector('.chat-unread-divider')) {
-						return;
-					}
+				if (containerEl && containerEl.length &&
+						containerEl[0].hasAttribute('data-rr-initial')) {
+					return; // suppress until positionInitialView decides where to scroll
 				}
 				return orig.call(messagesModule, containerEl);
 			};
@@ -411,6 +418,7 @@
 		});
 
 		$(window).on('action:ajaxify.end', onRoomActivity);
+
 		$(window).on('action:chat.loaded', function () {
 			eachRoomContainer(function (el, roomId) {
 				// Drop cached state so the next loadRoomState always fetches a
@@ -418,44 +426,30 @@
 				// action:chat.closed is never fired.
 				delete RR.rooms[roomId];
 				delete RR.lastMarkSeen[roomId];
-				RR.dividerNeeded[roomId] = true;
-				// Signal to message-window.tpl's rAF and our scrollToBottom
-				// intercept that a divider may be coming — don't scroll to bottom yet.
-				el[0].setAttribute('data-rr-divider-pending', '1');
+				// Mark this container as "just opened": suppress native bottom-scroll
+				// until positionInitialView runs once with the server's read-state.
+				el[0].setAttribute('data-rr-initial', '1');
 			});
 			onRoomActivity();
 		});
 
-		// A new message was appended (incoming or our own). Re-render and, if it
-		// arrived while we're watching, mark the room seen.
+		// A new message was appended (incoming or our own). Only refresh the receipt
+		// ticks and mark the room seen — never touch the divider or scrolling, so
+		// NodeBB's native scroll-to-bottom-on-new-message behaviour is preserved.
 		$(window).on('action:chat.received', function () {
-			renderAll();
+			renderAllReceipts();
 			markVisibleRoomsSeen();
-			// If the user is not actively viewing, the new message is unread —
-			// re-position the divider to the first message after their last-seen timestamp.
-			if (document.hidden || !document.hasFocus()) {
-				eachRoomContainer(function (el, roomId) {
-					if (!el.is(':visible')) {
-						return;
-					}
-					const state = RR.rooms[roomId];
-					if (!state) {
-						return;
-					}
-					insertUnreadDivider(el, roomId, state, { scroll: false });
-				});
-			}
 		});
 
 		// Re-render receipts whenever a batch of messages is added to the DOM
 		// (both on initial load and on scroll-up lazy loading).
 		$(window).on('action:chat.onMessagesAddedToDom', function () {
-			renderAll();
+			renderAllReceipts();
 		});
 
 		$(window).on('action:chat.sent', function () {
 			// Our own message: refresh receipts (shows "sent" until others read it).
-			setTimeout(renderAll, 100);
+			setTimeout(renderAllReceipts, 100);
 		});
 
 		// When the user refocuses the tab/window, let others know we've seen the room.

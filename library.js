@@ -83,6 +83,19 @@ async function getRoomReadState(socket, data) {
 	const users = usersData.map((u, index) => {
 		const fromPlugin = parseInt(pluginRead[u.uid], 10) || 0;
 		const fromCore = parseInt(coreRead[index] && coreRead[index][roomId], 10) || 0;
+		const isSelf = parseInt(u.uid, 10) === parseInt(uid, 10);
+		// For the requesting user we trust OUR OWN recorded seen-timestamp and do NOT
+		// merge in core's value. Core bumps `uid:<uid>:chat:rooms:read` to now the
+		// moment the room is opened (DELETE /chats/:roomId/state -> markRead), which
+		// would race ahead of this fetch and make every message look already-read,
+		// hiding the unread divider. Our markSeen runs only AFTER this returns, so
+		// the plugin value is the genuine pre-visit timestamp. Fall back to core only
+		// when we have no record yet (first visit after the plugin was installed).
+		// For everyone else, take the most recent of the two so their read receipts
+		// reflect the latest known read.
+		const timestamp = isSelf ?
+			(fromPlugin > 0 ? fromPlugin : fromCore) :
+			Math.max(fromPlugin, fromCore);
 		return {
 			uid: parseInt(u.uid, 10),
 			username: u.username,
@@ -90,7 +103,7 @@ async function getRoomReadState(socket, data) {
 			picture: u.picture,
 			'icon:text': u['icon:text'],
 			'icon:bgColor': u['icon:bgColor'],
-			timestamp: Math.max(fromPlugin, fromCore),
+			timestamp: timestamp,
 		};
 	});
 

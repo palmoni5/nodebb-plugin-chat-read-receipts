@@ -1,11 +1,17 @@
+.message-body-wrapper {
+	position: relative;
+}
+
 .chat-read-receipt {
-	display: block;
+	position: absolute;
+	bottom: 0;
+	inset-inline-end: 4px;
 	text-align: end;
 	font-size: 0.7rem;
-	line-height: 1.4;
-	margin-top: 2px;
+	line-height: 1;
 	white-space: nowrap;
 	user-select: none;
+	pointer-events: none;
 }
 
 .chat-read-receipt i {
