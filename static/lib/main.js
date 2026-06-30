@@ -9,6 +9,9 @@
 	RR.rooms = RR.rooms || {};
 	RR.loading = RR.loading || {};
 	RR.lastMarkSeen = RR.lastMarkSeen || {};
+	// Pending trailing markSeen timers (keyed by roomId) so a throttled call's
+	// final state still reaches the server.
+	RR.trailingSeen = RR.trailingSeen || {};
 	RR.socketBound = RR.socketBound || false;
 	// Events that arrive while state is still loading, keyed by roomId.
 	RR.pendingEvents = RR.pendingEvents || {};
@@ -308,7 +311,27 @@
 	function markSeen(roomId, containerEl) {
 		const now = Date.now();
 		if (RR.lastMarkSeen[roomId] && (now - RR.lastMarkSeen[roomId]) < 1000) {
+			// Throttled. Schedule one trailing pass so the newest message timestamp
+			// isn't lost when several markSeen calls bunch up (e.g. a batch of
+			// messages rendering in under a second).
+			if (!RR.trailingSeen[roomId]) {
+				RR.trailingSeen[roomId] = setTimeout(function () {
+					RR.trailingSeen[roomId] = null;
+					if (document.hidden || !document.hasFocus()) {
+						return;
+					}
+					const live = $('[component="chat/message/content"][data-roomid="' + roomId + '"]')
+						.filter(':visible').first();
+					if (live.length) {
+						markSeen(roomId, live);
+					}
+				}, 1000);
+			}
 			return;
+		}
+		if (RR.trailingSeen[roomId]) {
+			clearTimeout(RR.trailingSeen[roomId]);
+			RR.trailingSeen[roomId] = null;
 		}
 		RR.lastMarkSeen[roomId] = now;
 
@@ -420,6 +443,14 @@
 		$(window).on('action:ajaxify.end', onRoomActivity);
 
 		$(window).on('action:chat.loaded', function () {
+			// When core is deep-linking to a specific message it sets
+			// ajaxify.data.scrollToIndex and owns the scroll (it scrolls to and
+			// highlights that message before firing this event). In that case we must
+			// NOT flag the room for initial divider positioning — otherwise
+			// positionInitialView would yank the view to the unread divider or the
+			// bottom and break the deep link.
+			const deepLinkRoomId = (window.ajaxify && ajaxify.data && ajaxify.data.scrollToIndex) ?
+				parseInt(ajaxify.data.roomId, 10) : 0;
 			eachRoomContainer(function (el, roomId) {
 				// Drop cached state so the next loadRoomState always fetches a
 				// fresh timestamp — covers the full-page room-switch case where
@@ -428,7 +459,9 @@
 				delete RR.lastMarkSeen[roomId];
 				// Mark this container as "just opened": suppress native bottom-scroll
 				// until positionInitialView runs once with the server's read-state.
-				el[0].setAttribute('data-rr-initial', '1');
+				if (roomId !== deepLinkRoomId) {
+					el[0].setAttribute('data-rr-initial', '1');
+				}
 			});
 			onRoomActivity();
 		});
@@ -442,14 +475,33 @@
 		});
 
 		// Re-render receipts whenever a batch of messages is added to the DOM
-		// (both on initial load and on scroll-up lazy loading).
+		// (both on initial load and on scroll-up lazy loading). Once a room's
+		// one-time initial positioning is done (data-rr-initial cleared), also
+		// advance our seen-timestamp so reading on this device propagates to the
+		// shared server hash — closing the cross-device gap where a message that
+		// loaded after the initial markSeen stayed "unread" on other devices. We
+		// skip while data-rr-initial is still set so we never clobber the pre-visit
+		// baseline the divider depends on.
 		$(window).on('action:chat.onMessagesAddedToDom', function () {
 			renderAllReceipts();
+			if (document.hidden || !document.hasFocus()) {
+				return;
+			}
+			eachRoomContainer(function (el, roomId) {
+				if (!el[0].hasAttribute('data-rr-initial') && el.is(':visible')) {
+					markSeen(roomId, el);
+				}
+			});
 		});
 
 		$(window).on('action:chat.sent', function () {
-			// Our own message: refresh receipts (shows "sent" until others read it).
-			setTimeout(renderAllReceipts, 100);
+			// Our own message: refresh receipts (shows "sent" until others read it)
+			// and advance our own seen-timestamp — sending implies we've seen
+			// everything up to and including this message.
+			setTimeout(function () {
+				renderAllReceipts();
+				markVisibleRoomsSeen();
+			}, 100);
 		});
 
 		// When the user refocuses the tab/window, let others know we've seen the room.
