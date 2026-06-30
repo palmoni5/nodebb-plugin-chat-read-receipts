@@ -226,28 +226,27 @@
 			return;
 		}
 
+		// Find the divider boundary: the first message AFTER the last one I'm known
+		// to have seen. A "seen" message is either one with timestamp <= my pre-visit
+		// last-seen, OR one of MY OWN messages — sending a message proves I'd already
+		// seen everything before it. This guarantees the "New messages" divider is
+		// never placed before one of my own messages.
 		const msgs = containerEl.find('[component="chat/message"]').toArray();
-		let firstUnreadEl = null;
-		let hasReadBefore = false;
-
-		for (const el of msgs) {
+		const mine = myUid();
+		let lastReadIndex = -1;
+		for (let i = 0; i < msgs.length; i++) {
+			const el = msgs[i];
+			const isMine = parseInt($(el).attr('data-uid'), 10) === mine;
 			const msgTs = parseInt($(el).attr('data-timestamp'), 10) || 0;
-			if (msgTs <= myTs) {
-				hasReadBefore = true;
-			} else if (!firstUnreadEl) {
-				firstUnreadEl = el;
-				break;
+			if (isMine || msgTs <= myTs) {
+				lastReadIndex = i;
 			}
 		}
+		const firstUnreadEl = (lastReadIndex >= 0 && lastReadIndex + 1 < msgs.length) ?
+			msgs[lastReadIndex + 1] : null;
 
-		if (!firstUnreadEl) {
-			// All loaded messages already read — native scroll-to-bottom.
-			finishInitial(containerEl, true);
-			return;
-		}
-
-		if (!hasReadBefore) {
-			// All currently-loaded messages are unread — the boundary lies in older
+		if (lastReadIndex === -1 && msgs.length) {
+			// Nothing in this batch counts as read — the boundary lies in older
 			// messages not yet in the DOM. Load one more batch and retry.
 			if ((opts.depth || 0) >= 50) {
 				finishInitial(containerEl, true); // give up; behave like native.
@@ -267,6 +266,12 @@
 					finishInitial(containerEl, true);
 				});
 			});
+			return;
+		}
+
+		if (!firstUnreadEl) {
+			// Everything loaded is already read — native scroll-to-bottom.
+			finishInitial(containerEl, true);
 			return;
 		}
 
